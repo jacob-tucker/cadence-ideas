@@ -30,6 +30,7 @@ pub contract TopShotBundleMarket {
         pub var cutPercentage: UFix64
         pub fun purchase(bundleID: UInt64, buyTokens: @DapperUtilityCoin.Vault): @[TopShot.NFT]
         pub fun getBundleData(bundleID: UInt64): Bundle?
+        pub fun getMomentDatasInBundle(bundleID: UInt64): [&TopShot.NFT?]?
         pub fun getIDs(): [UInt64]
     }
 
