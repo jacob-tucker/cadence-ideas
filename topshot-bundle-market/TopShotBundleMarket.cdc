@@ -141,6 +141,18 @@ pub contract TopShotBundleMarket {
             return self.listings[bundleID]
         }
 
+        pub fun getMomentDatasInBundle(bundleID: UInt64): [&TopShot.NFT?]? {
+            if let bundle: Bundle = self.getBundleData(bundleID: bundleID) {
+                let answer: [&TopShot.NFT?] = []
+                for tokenID in bundle.tokenIDs {
+                    let ref: &TopShot.NFT? = self.ownerCollection.borrow()!.borrowMoment(id: tokenID)
+                    answer.append(ref)
+                }
+                return answer
+            }
+            return nil
+        }
+
         /// getIDs returns an array of bundle IDs that are for sale
         pub fun getIDs(): [UInt64] {
             return self.listings.keys
