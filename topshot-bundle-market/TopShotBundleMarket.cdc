@@ -4,17 +4,19 @@ import TopShot from "../contracts/TopShot.cdc"
 import DapperUtilityCoin from "../contracts/DapperUtilityCoin.cdc"
 import TopShotLocking from "../contracts/TopShotLocking.cdc"
 
-pub contract TopShotSetMarket {
+pub contract TopShotBundleMarket {
 
-    pub event SetListed(setID: UInt32, tokenIDs: [UInt64], price: UFix64, seller: Address?)
-    pub event SetPriceChanged(id: UInt32, newPrice: UFix64, seller: Address?)
-    pub event SetPurchased(id: UInt32, price: UFix64, seller: Address?)
-    pub event SetWithdrawn(id: UInt32, owner: Address?)
+    pub var totalBundles: UInt64
 
-    pub let SetMarketStoragePath: StoragePath
-    pub let SetMarketPublicPath: PublicPath
+    pub event BundleListed(tokenIDs: [UInt64], price: UFix64, seller: Address?)
+    pub event BundlePriceChanged(id: UInt64, newPrice: UFix64, seller: Address?)
+    pub event BundlePurchased(id: UInt64, price: UFix64, seller: Address?)
+    pub event BundleWithdrawn(id: UInt64, owner: Address?)
 
-    pub struct SetSaleData {
+    pub let BundleMarketStoragePath: StoragePath
+    pub let BundleMarketPublicPath: PublicPath
+
+    pub struct Bundle {
         pub let price: UFix64
         pub let tokenIDs: [UInt64]
 
@@ -26,15 +28,14 @@ pub contract TopShotSetMarket {
 
     pub resource interface SalePublic {
         pub var cutPercentage: UFix64
-        pub fun purchase(setID: UInt32, buyTokens: @DapperUtilityCoin.Vault): @[TopShot.NFT]
-        pub fun getSaleData(setID: UInt32): SetSaleData?
-        pub fun getIDs(): [UInt32]
-        pub fun getSetData(id: UInt32): TopShot.QuerySetData?
+        pub fun purchase(bundleID: UInt64, buyTokens: @DapperUtilityCoin.Vault): @[TopShot.NFT]
+        pub fun getBundleData(bundleID: UInt64): Bundle?
+        pub fun getIDs(): [UInt64]
     }
 
     pub resource SaleCollection: SalePublic {
         access(self) var ownerCollection: Capability<&TopShot.Collection>
-        access(self) var listings: {UInt32: SetSaleData}
+        access(self) var listings: {UInt64: Bundle}
         access(self) var ownerCapability: Capability<&{FungibleToken.Receiver}>
         access(self) var beneficiaryCapability: Capability<&{FungibleToken.Receiver}>
         pub var cutPercentage: UFix64
@@ -57,50 +58,44 @@ pub contract TopShotSetMarket {
             self.cutPercentage = cutPercentage
         }
 
-        pub fun listForSale(setID: UInt32, tokenIDs: [UInt64], price: UFix64) {
-            // make sure the user actually has the set
-            var coveredPlays: [UInt32] = []
-            let numOfPlaysInSet: Int = TopShot.getPlaysInSet(setID: setID)!.length
-            let collection = self.ownerCollection.borrow()!
-            for id in tokenIDs {
-                let moment: &TopShot.NFT = collection.borrowMoment(id: id)!
-                if moment.data.setID == setID && !coveredPlays.contains(moment.data.playID) && !TopShotLocking.isLocked(nftRef: collection.borrowNFT(id: id)) {
-                    coveredPlays.append(moment.data.playID)
-                }
+        pub fun listForSale(tokenIDs: [UInt64], price: UFix64) {
+            // make sure the user has all the tokenIDs
+            for tokenID in tokenIDs {
+                assert(
+                    self.ownerCollection.borrow()!.borrowMoment(id: tokenID) != nil,
+                    message: "Moment with ID ".concat(tokenID.toString()).concat(" does not exist in the owner's collection")
+                )
             }
-            assert(coveredPlays.length >= numOfPlaysInSet, message: "This user does not own this Set.")
- 
             // Set the listing
-            self.listings[setID] = SetSaleData(price: price, tokenIDs: tokenIDs)
-
-            emit SetListed(setID: setID, tokenIDs: tokenIDs, price: price, seller: self.owner?.address)
+            self.listings[TopShotBundleMarket.totalBundles] = Bundle(price: price, tokenIDs: tokenIDs)
+            emit BundleListed(tokenIDs: tokenIDs, price: price, seller: self.owner?.address)
+            TopShotBundleMarket.totalBundles = TopShotBundleMarket.totalBundles + 1
         }
 
-        pub fun cancelSale(setID: UInt32) {
-            if self.listings[setID] == nil {
+        pub fun cancelSale(bundleID: UInt64) {
+            if self.listings[bundleID] == nil {
                 return
             }
 
             // Remove the price from the prices dictionary
-            self.listings.remove(key: setID)
+            self.listings.remove(key: bundleID)
 
             // Emit the event for withdrawing a moment from the Sale
-            emit SetWithdrawn(id: setID, owner: self.owner?.address)
+            emit BundleWithdrawn(id: bundleID, owner: self.owner?.address)
         }
 
-        /// purchase lets a user send tokens to purchase a Set that is for sale
-        /// the purchased Set is returned to the transaction context that called it
-        pub fun purchase(setID: UInt32, buyTokens: @DapperUtilityCoin.Vault): @[TopShot.NFT] {
+        /// purchase lets a user send tokens to purchase a Bundle that is for sale
+        /// the purchased Bundle is returned to the transaction context that called it
+        pub fun purchase(bundleID: UInt64, buyTokens: @DapperUtilityCoin.Vault): @[TopShot.NFT] {
             pre {
-                self.listings[setID] == nil: "No set matching this ID for sale!"
+                self.listings[bundleID] == nil: "No bundle matching this ID for sale!"
             }
 
-            // Read the price for the set
-            let saleData: SetSaleData = self.listings[setID]!
+            let saleData: Bundle = self.listings[bundleID]!
 
             assert(
                 buyTokens.balance == saleData.price,
-                message: "Not enough tokens to buy the Set!"
+                message: "Not enough tokens to buy the Bundle!"
             )
 
             // Take the cut of the tokens that the beneficiary gets from the sent tokens
@@ -112,18 +107,18 @@ pub contract TopShotSetMarket {
             // Deposit the remaining tokens into the owners vault
             self.ownerCapability.borrow()!.deposit(from: <-buyTokens)
 
-            emit SetPurchased(id: setID, price: saleData.price, seller: self.owner?.address)
+            emit BundlePurchased(id: bundleID, price: saleData.price, seller: self.owner?.address)
 
-            // Return the purchased set
-            let set: @[TopShot.NFT] <- []
+            // Return the purchased bundle
+            let bundle: @[TopShot.NFT] <- []
             for id in saleData.tokenIDs {
-                set.append(<- (self.ownerCollection.borrow()!.withdraw(withdrawID: id) as! @TopShot.NFT))
+                bundle.append(<- (self.ownerCollection.borrow()!.withdraw(withdrawID: id) as! @TopShot.NFT))
             }
 
             // remove the listing
-            self.listings.remove(key: setID)
+            self.listings.remove(key: bundleID)
 
-            return <- set
+            return <- bundle
         }
 
         pub fun changeOwnerReceiver(_ newOwnerCapability: Capability<&{FungibleToken.Receiver}>) {
@@ -142,20 +137,13 @@ pub contract TopShotSetMarket {
             self.beneficiaryCapability = newBeneficiaryCapability
         }
 
-        /// getPrice returns the price of a specific set in the sale
-        ///
-        /// Returns: UFix64: The price of the set
-        pub fun getSaleData(setID: UInt32): SetSaleData? {
-            return self.listings[setID]
+        pub fun getBundleData(bundleID: UInt64): Bundle? {
+            return self.listings[bundleID]
         }
 
-        /// getIDs returns an array of set IDs that are for sale
-        pub fun getIDs(): [UInt32] {
+        /// getIDs returns an array of bundle IDs that are for sale
+        pub fun getIDs(): [UInt64] {
             return self.listings.keys
-        }
-
-        pub fun getSetData(id: UInt32): TopShot.QuerySetData? {
-            return TopShot.getSetData(setID: id)
         }
     }
 
@@ -170,7 +158,8 @@ pub contract TopShotSetMarket {
     }
 
     init() {
-        self.SetMarketStoragePath = /storage/TopShotSetMarketSaleCollection
-        self.SetMarketPublicPath = /public/TopShotSetMarketSaleCollection
+        self.totalBundles = 0
+        self.BundleMarketStoragePath = /storage/TopShotBundleMarketSaleCollection
+        self.BundleMarketPublicPath = /public/TopShotBundleMarketSaleCollection
     }
 }
